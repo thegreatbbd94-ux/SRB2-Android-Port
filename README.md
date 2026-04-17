@@ -22,14 +22,29 @@ Download the latest APK from the [Releases](../../releases) page.
 
 - Android 5.0 (API 21) or higher
 - ARM64 device (most modern Android phones)
-- ~150 MB storage for game data
+- ~170 MB storage
 
 ### Installation
 
-1. Download the `.apk` file from Releases
+1. Download the `.apk` file from the [Releases](../../releases) page
 2. Enable "Install from unknown sources" in your Android settings if prompted
 3. Open the APK and install
-4. Launch SRB2 — game data will be extracted on first run
+4. Launch and play — all game data is included in the APK!
+
+### Game Data Files
+
+All required SRB2 v2.2.15 game data files are **bundled in the APK**:
+
+| File | Description |
+|---|---|
+| `srb2.pk3` | Main game data |
+| `zones.pk3` | Level/map data |
+| `characters.pk3` | Character data |
+| `music.pk3` | Music and sounds |
+
+The data files are from the official [SRB2 v2.2.15 release](https://github.com/STJr/SRB2/releases/tag/SRB2_release_2.2.15) by Sonic Team Junior.
+
+**Building from source:** Place the `.pk3` files in `app/src/main/assets/srb2data/` before building. Download them from the [official SRB2 release](https://github.com/STJr/SRB2/releases/tag/SRB2_release_2.2.15).
 
 ## Building from Source
 
