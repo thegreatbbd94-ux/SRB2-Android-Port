@@ -682,6 +682,14 @@ void G_DefineDefaultControls(void)
 	INT32 i;
 
 	// FPS game controls (WASD)
+#ifdef ANDROID
+	// On Android, arrow keys come from the touch D-pad and should control movement
+	// (camera is handled by touch drag). No physical keyboard, so no WASD needed.
+	gamecontroldefault[gcs_fps][GC_FORWARD    ][0] = KEY_UPARROW;
+	gamecontroldefault[gcs_fps][GC_BACKWARD   ][0] = KEY_DOWNARROW;
+	gamecontroldefault[gcs_fps][GC_STRAFELEFT ][0] = KEY_LEFTARROW;
+	gamecontroldefault[gcs_fps][GC_STRAFERIGHT][0] = KEY_RIGHTARROW;
+#else
 	gamecontroldefault[gcs_fps][GC_FORWARD    ][0] = 'w';
 	gamecontroldefault[gcs_fps][GC_BACKWARD   ][0] = 's';
 	gamecontroldefault[gcs_fps][GC_STRAFELEFT ][0] = 'a';
@@ -690,6 +698,7 @@ void G_DefineDefaultControls(void)
 	gamecontroldefault[gcs_fps][GC_LOOKDOWN   ][0] = KEY_DOWNARROW;
 	gamecontroldefault[gcs_fps][GC_TURNLEFT   ][0] = KEY_LEFTARROW;
 	gamecontroldefault[gcs_fps][GC_TURNRIGHT  ][0] = KEY_RIGHTARROW;
+#endif
 	gamecontroldefault[gcs_fps][GC_CENTERVIEW ][0] = KEY_LCTRL;
 	gamecontroldefault[gcs_fps][GC_JUMP       ][0] = KEY_SPACE;
 	gamecontroldefault[gcs_fps][GC_SPIN       ][0] = KEY_LSHIFT;

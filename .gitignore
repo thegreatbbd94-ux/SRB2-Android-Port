@@ -27,3 +27,28 @@ Win32_LIB_ASM_Release
 /out
 /objs/VC10
 /thirdparty/vcpkg-overlays
+
+# Android port build artifacts
+android-port/.gradle/
+android-port/.idea/
+android-port/app/.cxx/
+android-port/app/build/
+android-port/app/.externalNativeBuild/
+android-port/local.properties
+android-port/build_log.txt
+android-port/cmake_log.txt
+android-port/cmake_out.txt
+android-port/gradle_full_output*.txt
+
+# Android third-party libs (too large; see README for download instructions)
+android-port/app/src/main/jni/SDL2/
+android-port/app/src/main/jni/SDL2_mixer/
+android-port/app/src/main/jni/SDL2_old/
+android-port/app/src/main/jni/curl/
+android-port/app/src/main/jni/mbedtls/
+
+# Misc
+*.zip
+*.png
+crash_log.txt
+logcat*.txt

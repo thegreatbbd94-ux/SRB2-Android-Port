@@ -542,10 +542,14 @@ static void RoomId_OnChange(void)
 {
 	if (ms_RoomId != cv_masterserver_room_id.value)
 	{
+#ifdef MASTERSERVER
 		UnregisterServer();
+#endif
 		ms_RoomId = cv_masterserver_room_id.value;
+#ifdef MASTERSERVER
 		if (Online())
 			RegisterServer();
+#endif
 	}
 }
 

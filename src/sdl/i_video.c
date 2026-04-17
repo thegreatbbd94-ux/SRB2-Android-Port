@@ -32,6 +32,13 @@
 #define _MATH_DEFINES_DEFINED
 #include "SDL.h"
 
+#ifdef ANDROID
+#include <android/log.h>
+#define VLOG(...) __android_log_print(ANDROID_LOG_INFO, "SRB2", __VA_ARGS__)
+#else
+#define VLOG(...) do{}while(0)
+#endif
+
 #ifdef _MSC_VER
 #include <windows.h>
 #pragma warning(default : 4214 4244)
@@ -86,6 +93,391 @@
 #include "ogl_sdl.h"
 #endif
 
+/* ======================================================
+ * Android touch-screen overlay  (v2 – professional layout + camera)
+ * ====================================================== */
+#ifdef ANDROID
+#include <math.h>
+
+/* ---- Button IDs ---- */
+enum {
+	TOUCH_NONE = -1,
+	TOUCH_UP,
+	TOUCH_DOWN,
+	TOUCH_LEFT,
+	TOUCH_RIGHT,
+	TOUCH_A,       /* Jump  (gameplay) / Enter (menus) */
+	TOUCH_B,       /* Spin  (gameplay) / Escape (menus) */
+	TOUCH_START,   /* Pause / Confirm */
+	TOUCH_CAMERA,  /* Camera drag zone – centre of screen */
+	TOUCH_NUM
+};
+
+/* Map button ID -> SRB2 key (TOUCH_CAMERA has no key) */
+static const INT32 touch_key[TOUCH_NUM] = {
+	KEY_UPARROW,    /* UP    */
+	KEY_DOWNARROW,  /* DOWN  */
+	KEY_LEFTARROW,  /* LEFT  */
+	KEY_RIGHTARROW, /* RIGHT */
+	KEY_SPACE,      /* A  (jump / enter) */
+	KEY_RSHIFT,     /* B  (spin / esc)   */
+	KEY_ENTER,      /* START             */
+	0,              /* CAMERA – no key   */
+};
+
+/* Each button: normalised screen rect (0‥1).
+ * Designed for 16:9 landscape phone screens.
+ *
+ *  Layout:
+ *  ┌─────────────────────────────────────────────┐
+ *  │  [START]                                    │
+ *  │                                             │
+ *  │      [UP]              (camera zone)   [A]  │
+ *  │  [LEFT][RIGHT]                         [B]  │
+ *  │     [DOWN]                                  │
+ *  └─────────────────────────────────────────────┘
+ */
+typedef struct { float x, y, w, h; } touchrect_t;
+
+/* D-pad: compact cross, bottom-left, fully visible */
+/* Action buttons: right side, comfy thumb size */
+static const touchrect_t touch_rect[TOUCH_NUM] = {
+	/* UP    */ { 0.050f, 0.52f, 0.055f, 0.10f },
+	/* DOWN  */ { 0.050f, 0.74f, 0.055f, 0.10f },
+	/* LEFT  */ { 0.000f, 0.63f, 0.055f, 0.10f },
+	/* RIGHT */ { 0.100f, 0.63f, 0.055f, 0.10f },
+	/* A     */ { 0.88f,  0.50f, 0.09f,  0.15f },
+	/* B     */ { 0.88f,  0.72f, 0.09f,  0.15f },
+	/* START */ { 0.44f,  0.01f, 0.12f,  0.06f },
+	/* CAM   */ { 0.20f,  0.10f, 0.58f,  0.88f },
+};
+
+/* Button labels (single char or short) for drawing */
+static const char *touch_label[TOUCH_NUM] = {
+	"^",   /* UP    */
+	"v",   /* DOWN  */
+	"<",   /* LEFT  */
+	">",   /* RIGHT */
+	"A",   /* A     */
+	"B",   /* B     */
+	"ST",  /* START */
+	NULL,  /* CAMERA – invisible */
+};
+
+/* ---- Finger tracking ---- */
+#define MAX_TOUCH_FINGERS 10
+static struct {
+	SDL_FingerID id;
+	int btn;        /* TOUCH_xxx or TOUCH_NONE */
+	boolean active;
+	float startx, starty; /* for camera: initial position */
+} touch_fingers[MAX_TOUCH_FINGERS];
+
+static boolean touch_held[TOUCH_NUM];
+
+/* Camera sensitivity: pixels of mouse motion per normalised-screen-unit of drag */
+#define TOUCH_CAM_SENSITIVITY 1200.0f
+
+/* ---- Hit-test: check visible buttons first, camera zone last ---- */
+static int Touch_HitTest(float fx, float fy)
+{
+	int i;
+	/* Check all buttons EXCEPT camera first (they sit on top) */
+	for (i = 0; i < TOUCH_NUM; i++)
+	{
+		if (i == TOUCH_CAMERA) continue;
+		{
+			const touchrect_t *r = &touch_rect[i];
+			if (fx >= r->x && fx < r->x + r->w &&
+			    fy >= r->y && fy < r->y + r->h)
+				return i;
+		}
+	}
+	/* Then check camera zone */
+	{
+		const touchrect_t *r = &touch_rect[TOUCH_CAMERA];
+		if (fx >= r->x && fx < r->x + r->w &&
+		    fy >= r->y && fy < r->y + r->h)
+			return TOUCH_CAMERA;
+	}
+	return TOUCH_NONE;
+}
+
+static void Touch_PostKey(int btn, evtype_t type)
+{
+	event_t ev;
+	if (btn == TOUCH_CAMERA) return; /* camera doesn't send key events */
+	ev.type = type;
+	ev.key = touch_key[btn];
+	ev.x = ev.y = 0;
+	ev.repeated = false;
+	D_PostEvent(&ev);
+}
+
+static void Touch_PostMouse(float dx, float dy)
+{
+	event_t ev;
+	ev.type = ev_mouse;
+	ev.key = 0;
+	ev.x = (INT32)(dx * TOUCH_CAM_SENSITIVITY);
+	ev.y = (INT32)(dy * TOUCH_CAM_SENSITIVITY);
+	if (ev.x || ev.y)
+		D_PostEvent(&ev);
+}
+
+/* ---- Main event handler ---- */
+static void Touch_HandleEvent(SDL_Event *sdlev)
+{
+	int i, slot;
+	SDL_FingerID fid;
+	float fx, fy;
+	int btn;
+
+	if (sdlev->type == SDL_FINGERDOWN)
+	{
+		fid = sdlev->tfinger.fingerId;
+		fx  = sdlev->tfinger.x;
+		fy  = sdlev->tfinger.y;
+		btn = Touch_HitTest(fx, fy);
+		VLOG("TOUCH DOWN: fx=%.3f fy=%.3f btn=%d", fx, fy, btn);
+		if (btn == TOUCH_NONE) return;
+
+		slot = -1;
+		for (i = 0; i < MAX_TOUCH_FINGERS; i++)
+			if (!touch_fingers[i].active) { slot = i; break; }
+		if (slot < 0) return;
+
+		touch_fingers[slot].id      = fid;
+		touch_fingers[slot].btn     = btn;
+		touch_fingers[slot].active  = true;
+		touch_fingers[slot].startx  = fx;
+		touch_fingers[slot].starty  = fy;
+
+		if (btn != TOUCH_CAMERA && !touch_held[btn])
+		{
+			touch_held[btn] = true;
+			Touch_PostKey(btn, ev_keydown);
+			VLOG("TOUCH KEY DOWN: btn=%d key=%d", btn, touch_key[btn]);
+		}
+	}
+	else if (sdlev->type == SDL_FINGERUP)
+	{
+		fid = sdlev->tfinger.fingerId;
+		for (i = 0; i < MAX_TOUCH_FINGERS; i++)
+		{
+			if (touch_fingers[i].active && touch_fingers[i].id == fid)
+			{
+				int oldbtn = touch_fingers[i].btn;
+				touch_fingers[i].active = false;
+
+				if (oldbtn != TOUCH_CAMERA)
+				{
+					boolean still = false;
+					int j;
+					for (j = 0; j < MAX_TOUCH_FINGERS; j++)
+						if (touch_fingers[j].active && touch_fingers[j].btn == oldbtn)
+							{ still = true; break; }
+					if (!still && touch_held[oldbtn])
+					{
+						touch_held[oldbtn] = false;
+						Touch_PostKey(oldbtn, ev_keyup);
+					}
+				}
+				break;
+			}
+		}
+	}
+	else if (sdlev->type == SDL_FINGERMOTION)
+	{
+		fid = sdlev->tfinger.fingerId;
+		fx  = sdlev->tfinger.x;
+		fy  = sdlev->tfinger.y;
+		for (i = 0; i < MAX_TOUCH_FINGERS; i++)
+		{
+			if (touch_fingers[i].active && touch_fingers[i].id == fid)
+			{
+				int oldbtn = touch_fingers[i].btn;
+
+				if (oldbtn == TOUCH_CAMERA)
+				{
+					/* Send relative mouse motion for camera look */
+					float dx = sdlev->tfinger.dx;
+					float dy = sdlev->tfinger.dy;
+					Touch_PostMouse(dx, -dy);
+				}
+				else
+				{
+					int newbtn = Touch_HitTest(fx, fy);
+					if (newbtn != oldbtn)
+					{
+						touch_fingers[i].btn = newbtn;
+						if (oldbtn != TOUCH_NONE && oldbtn != TOUCH_CAMERA)
+						{
+							boolean still = false;
+							int j;
+							for (j = 0; j < MAX_TOUCH_FINGERS; j++)
+								if (j != i && touch_fingers[j].active && touch_fingers[j].btn == oldbtn)
+									{ still = true; break; }
+							if (!still && touch_held[oldbtn])
+							{
+								touch_held[oldbtn] = false;
+								Touch_PostKey(oldbtn, ev_keyup);
+							}
+						}
+						if (newbtn != TOUCH_NONE && newbtn != TOUCH_CAMERA && !touch_held[newbtn])
+						{
+							touch_held[newbtn] = true;
+							Touch_PostKey(newbtn, ev_keydown);
+						}
+					}
+				}
+				break;
+			}
+		}
+	}
+}
+
+/* ---- Helper: draw a filled circle using horizontal lines ---- */
+static void Touch_FillCircle(SDL_Renderer *rend, int cx, int cy, int radius)
+{
+	int y, x, x2;
+	for (y = -radius; y <= radius; y++)
+	{
+		x = (int)sqrtf((float)(radius * radius - y * y));
+		SDL_RenderDrawLine(rend, cx - x, cy + y, cx + x, cy + y);
+	}
+}
+
+/* ---- Helper: draw a circle outline ---- */
+static void Touch_DrawCircle(SDL_Renderer *rend, int cx, int cy, int radius)
+{
+	int x = radius, y = 0, err = 1 - radius;
+	while (x >= y)
+	{
+		SDL_RenderDrawPoint(rend, cx + x, cy + y);
+		SDL_RenderDrawPoint(rend, cx - x, cy + y);
+		SDL_RenderDrawPoint(rend, cx + x, cy - y);
+		SDL_RenderDrawPoint(rend, cx - x, cy - y);
+		SDL_RenderDrawPoint(rend, cx + y, cy + x);
+		SDL_RenderDrawPoint(rend, cx - y, cy + x);
+		SDL_RenderDrawPoint(rend, cx + y, cy - x);
+		SDL_RenderDrawPoint(rend, cx - y, cy - x);
+		y++;
+		if (err < 0)
+			err += 2 * y + 1;
+		else
+		{
+			x--;
+			err += 2 * (y - x) + 1;
+		}
+	}
+}
+
+/* ---- Draw arrow inside a d-pad button ---- */
+static void Touch_DrawArrow(SDL_Renderer *rend, int cx, int cy, int sz, int dir)
+{
+	/* dir: 0=up 1=down 2=left 3=right */
+	int i;
+	switch (dir)
+	{
+		case 0: /* UP arrow */
+			for (i = 0; i < sz; i++)
+				SDL_RenderDrawLine(rend, cx - i, cy + i, cx + i, cy + i);
+			break;
+		case 1: /* DOWN arrow */
+			for (i = 0; i < sz; i++)
+				SDL_RenderDrawLine(rend, cx - i, cy - i, cx + i, cy - i);
+			break;
+		case 2: /* LEFT arrow */
+			for (i = 0; i < sz; i++)
+				SDL_RenderDrawLine(rend, cx + i, cy - i, cx + i, cy + i);
+			break;
+		case 3: /* RIGHT arrow */
+			for (i = 0; i < sz; i++)
+				SDL_RenderDrawLine(rend, cx - i, cy - i, cx - i, cy + i);
+			break;
+	}
+}
+
+/* ---- Main draw routine ---- */
+static void Touch_Draw(SDL_Renderer *rend)
+{
+	int i, ww, wh;
+	int cx, cy, radius, sz;
+	SDL_Rect dst;
+
+	SDL_GetRendererOutputSize(rend, &ww, &wh);
+	SDL_SetRenderDrawBlendMode(rend, SDL_BLENDMODE_BLEND);
+
+	for (i = 0; i < TOUCH_NUM; i++)
+	{
+		const touchrect_t *r = &touch_rect[i];
+		if (i == TOUCH_CAMERA) continue; /* invisible */
+
+		dst.x = (int)(r->x * ww);
+		dst.y = (int)(r->y * wh);
+		dst.w = (int)(r->w * ww);
+		dst.h = (int)(r->h * wh);
+
+		cx = dst.x + dst.w / 2;
+		cy = dst.y + dst.h / 2;
+		radius = (dst.w < dst.h ? dst.w : dst.h) / 2 - 2;
+		if (radius < 4) radius = 4;
+
+		/* Filled circle background */
+		if (touch_held[i])
+			SDL_SetRenderDrawColor(rend, 255, 255, 255, 70);
+		else
+			SDL_SetRenderDrawColor(rend, 100, 100, 100, 35);
+		Touch_FillCircle(rend, cx, cy, radius);
+
+		/* Circle outline */
+		if (touch_held[i])
+			SDL_SetRenderDrawColor(rend, 255, 255, 255, 130);
+		else
+			SDL_SetRenderDrawColor(rend, 200, 200, 200, 55);
+		Touch_DrawCircle(rend, cx, cy, radius);
+
+		/* Inner icon */
+		sz = radius / 3;
+		if (sz < 3) sz = 3;
+		if (touch_held[i])
+			SDL_SetRenderDrawColor(rend, 255, 255, 255, 220);
+		else
+			SDL_SetRenderDrawColor(rend, 255, 255, 255, 110);
+
+		switch (i)
+		{
+			case TOUCH_UP:    Touch_DrawArrow(rend, cx, cy - sz/3, sz, 0); break;
+			case TOUCH_DOWN:  Touch_DrawArrow(rend, cx, cy + sz/3, sz, 1); break;
+			case TOUCH_LEFT:  Touch_DrawArrow(rend, cx - sz/3, cy, sz, 2); break;
+			case TOUCH_RIGHT: Touch_DrawArrow(rend, cx + sz/3, cy, sz, 3); break;
+			case TOUCH_A:
+			case TOUCH_B:
+				/* Small filled dot in the center */
+				Touch_FillCircle(rend, cx, cy, sz / 2 + 1);
+				break;
+			case TOUCH_START:
+				/* Two small vertical bars (pause icon) */
+				{
+					SDL_Rect bar;
+					bar.w = sz / 3; if (bar.w < 2) bar.w = 2;
+					bar.h = sz;
+					bar.x = cx - sz/3 - bar.w/2;
+					bar.y = cy - bar.h/2;
+					SDL_RenderFillRect(rend, &bar);
+					bar.x = cx + sz/3 - bar.w/2;
+					SDL_RenderFillRect(rend, &bar);
+				}
+				break;
+		}
+	}
+
+	/* Reset draw color to black so SDL_RenderClear next frame is clean */
+	SDL_SetRenderDrawColor(rend, 0, 0, 0, 255);
+}
+#endif /* ANDROID */
+
 // maximum number of windowed modes (see windowedModes[][])
 #define MAXWINMODES (21)
 
@@ -112,7 +504,12 @@ UINT8 graphics_started = 0; // Is used in console.c and screen.c
 // To disable fullscreen at startup; is set in VID_PrepareModeList
 boolean allow_fullscreen = false;
 static SDL_bool disable_fullscreen = SDL_FALSE;
+#if defined(ANDROID)
+// Android is always fullscreen
+#define USE_FULLSCREEN SDL_TRUE
+#else
 #define USE_FULLSCREEN (disable_fullscreen||!allow_fullscreen)?0:cv_fullscreen.value
+#endif
 static SDL_bool disable_mouse = SDL_FALSE;
 #define USE_MOUSEINPUT (!disable_mouse && cv_usemouse.value && havefocus)
 #define MOUSE_MENU false //(!disable_mouse && cv_usemouse.value && menuactive && !USE_FULLSCREEN)
@@ -192,6 +589,8 @@ static void SDLSetMode(INT32 width, INT32 height, SDL_bool fullscreen, SDL_bool 
 	int bpp = 16;
 	int sw_texture_format = SDL_PIXELFORMAT_ABGR8888;
 
+	VLOG("SDLSetMode: enter %dx%d fullscreen=%d repos=%d window=%p", width, height, (int)fullscreen, (int)reposition, (void*)window);
+
 	realwidth = vid.width;
 	realheight = vid.height;
 
@@ -222,13 +621,16 @@ static void SDLSetMode(INT32 width, INT32 height, SDL_bool fullscreen, SDL_bool 
 	}
 	else
 	{
+		VLOG("SDLSetMode: no window yet, calling Impl_CreateWindow");
 		Impl_CreateWindow(fullscreen);
+		VLOG("SDLSetMode: Impl_CreateWindow returned, window=%p", (void*)window);
 		wasfullscreen = fullscreen;
 		SDL_SetWindowSize(window, width, height);
 		if (fullscreen)
 		{
 			SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
 		}
+		VLOG("SDLSetMode: window setup done");
 	}
 
 #ifdef HWRENDER
@@ -260,7 +662,9 @@ static void SDLSetMode(INT32 width, INT32 height, SDL_bool fullscreen, SDL_bool 
 			sw_texture_format = SDL_PIXELFORMAT_RGBA8888;
 		}
 
+		VLOG("SDLSetMode: calling SDL_CreateTexture fmt=0x%x %dx%d", sw_texture_format, width, height);
 		texture = SDL_CreateTexture(renderer, sw_texture_format, SDL_TEXTUREACCESS_STREAMING, width, height);
+		VLOG("SDLSetMode: SDL_CreateTexture result=%p err=%s", (void*)texture, SDL_GetError());
 
 		// Set up SW surface
 		if (vidSurface != NULL)
@@ -1118,6 +1522,13 @@ void I_GetEvent(void)
 				LUA_HookBool(true, HOOK(GameQuit));
 				I_Quit();
 				break;
+#ifdef ANDROID
+			case SDL_FINGERDOWN:
+			case SDL_FINGERUP:
+			case SDL_FINGERMOTION:
+				Touch_HandleEvent(&evt);
+				break;
+#endif
 		}
 	}
 
@@ -1295,6 +1706,9 @@ void I_FinishUpdate(void)
 
 		SDL_RenderClear(renderer);
 		SDL_RenderCopy(renderer, texture, &src_rect, NULL);
+#if defined(ANDROID) && !defined(ANDROID_JAVA_TOUCH_OVERLAY)
+		Touch_Draw(renderer);
+#endif
 		SDL_RenderPresent(renderer);
 	}
 #ifdef HWRENDER
@@ -1416,6 +1830,7 @@ void VID_PrepareModeList(void)
 
 static SDL_bool Impl_CreateContext(void)
 {
+	VLOG("Impl_CreateContext: enter, rendermode=%d", (int)rendermode);
 	// Renderer-specific stuff
 #ifdef HWRENDER
 	if ((rendermode == render_opengl)
@@ -1451,14 +1866,18 @@ static SDL_bool Impl_CreateContext(void)
 #endif
 		}
 
+		VLOG("Impl_CreateContext: calling SDL_CreateRenderer flags=0x%x", flags);
 		if (!renderer)
 			renderer = SDL_CreateRenderer(window, -1, flags);
 		if (renderer == NULL)
 		{
+			VLOG("Impl_CreateContext: SDL_CreateRenderer FAILED: %s", SDL_GetError());
 			CONS_Printf(M_GetText("Couldn't create rendering context: %s\n"), SDL_GetError());
 			return SDL_FALSE;
 		}
+		VLOG("Impl_CreateContext: SDL_CreateRenderer OK, renderer=%p", (void*)renderer);
 		SDL_RenderSetLogicalSize(renderer, BASEVIDWIDTH, BASEVIDHEIGHT);
+		VLOG("Impl_CreateContext: RenderSetLogicalSize %dx%d done", BASEVIDWIDTH, BASEVIDHEIGHT);
 	}
 	return SDL_TRUE;
 }
@@ -1486,6 +1905,7 @@ boolean VID_CheckRenderer(void)
 {
 	boolean rendererchanged = false;
 	boolean contextcreated = false;
+	VLOG("VID_CheckRenderer: enter, rendermode=%d setrenderneeded=%d", (int)rendermode, (int)setrenderneeded);
 #ifdef HWRENDER
 	rendermode_t oldrenderer = rendermode;
 #endif
@@ -1544,8 +1964,11 @@ boolean VID_CheckRenderer(void)
 		setrenderneeded = 0;
 	}
 
+	VLOG("VID_CheckRenderer: calling SDLSetMode %dx%d fullscreen=%d", vid.width, vid.height, (int)USE_FULLSCREEN);
 	SDLSetMode(vid.width, vid.height, USE_FULLSCREEN, (setmodeneeded ? SDL_TRUE : SDL_FALSE));
+	VLOG("VID_CheckRenderer: SDLSetMode returned");
 	Impl_VideoSetupBuffer();
+	VLOG("VID_CheckRenderer: Impl_VideoSetupBuffer done");
 
 	if (rendermode == render_soft)
 	{
@@ -1619,11 +2042,16 @@ static SDL_bool Impl_CreateWindow(SDL_bool fullscreen)
 {
 	int flags = 0;
 
+	VLOG("Impl_CreateWindow: enter, fullscreen=%d", (int)fullscreen);
+
 	if (rendermode == render_none) // dedicated
 		return SDL_TRUE; // Monster Iestyn -- not sure if it really matters what we return here tbh
 
 	if (window != NULL)
+	{
+		VLOG("Impl_CreateWindow: window already exists, returning FALSE");
 		return SDL_FALSE;
+	}
 
 	if (fullscreen)
 		flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
@@ -1631,6 +2059,21 @@ static SDL_bool Impl_CreateWindow(SDL_bool fullscreen)
 	if (borderlesswindow)
 		flags |= SDL_WINDOW_BORDERLESS;
 
+#if defined(ANDROID)
+	// On Android, the SDL renderer uses OpenGL ES internally,
+	// so we always need an OpenGL window even for software rendering.
+	// Use FULLSCREEN_DESKTOP to use native screen resolution.
+	flags |= SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN_DESKTOP;
+	SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengles2");
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+	SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
+	SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
+	SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
+	SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
+	SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 16);
+#else
 #ifdef HWRENDER
 	if (vid.glstate == VID_GL_LIBRARY_LOADED)
 		flags |= SDL_WINDOW_OPENGL;
@@ -1640,20 +2083,24 @@ static SDL_bool Impl_CreateWindow(SDL_bool fullscreen)
 	// default value for SDL_GL_DEPTH_SIZE is 16.
 	SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
 #endif
+#endif
 
 	// Create a window
+	VLOG("Impl_CreateWindow: calling SDL_CreateWindow flags=0x%x size=%dx%d", flags, realwidth, realheight);
 	window = SDL_CreateWindow("SRB2 "VERSIONSTRING, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
 			realwidth, realheight, flags);
 
-
 	if (window == NULL)
 	{
+		VLOG("Impl_CreateWindow: SDL_CreateWindow FAILED: %s", SDL_GetError());
 		CONS_Printf(M_GetText("Couldn't create window: %s\n"), SDL_GetError());
 		return SDL_FALSE;
 	}
 
+	VLOG("Impl_CreateWindow: SDL_CreateWindow OK, window=%p", (void*)window);
 	Impl_SetWindowIcon();
 
+	VLOG("Impl_CreateWindow: calling Impl_CreateContext");
 	return Impl_CreateContext();
 }
 
@@ -1740,14 +2187,18 @@ void I_StartupGraphics(void)
 
 #if !defined(HAVE_TTF)
 	// Previously audio was init here for questionable reasons?
+	VLOG("I_StartupGraphics: calling SDL_InitSubSystem(SDL_INIT_VIDEO)...");
 	if (SDL_InitSubSystem(SDL_INIT_VIDEO) < 0)
 	{
+		VLOG("I_StartupGraphics: SDL_InitSubSystem FAILED: %s", SDL_GetError());
 		CONS_Printf(M_GetText("Couldn't initialize SDL's Video System: %s\n"), SDL_GetError());
 		return;
 	}
+	VLOG("I_StartupGraphics: SDL_InitSubSystem OK");
 #endif
 	{
 		const char *vd = SDL_GetCurrentVideoDriver();
+		VLOG("I_StartupGraphics: video driver='%s'", vd ? vd : "NULL");
 		//CONS_Printf(M_GetText("Starting up with video driver: %s\n"), vd);
 		if (vd && (
 			strncasecmp(vd, "gcvideo", 8) == 0 ||
@@ -1819,7 +2270,9 @@ void I_StartupGraphics(void)
 	// Create window
 	//Impl_CreateWindow(USE_FULLSCREEN);
 	//Impl_SetWindowName("SRB2 "VERSIONSTRING);
+	VLOG("I_StartupGraphics: calling VID_SetMode rendermode=%d", (int)rendermode);
 	VID_SetMode(VID_GetModeForSize(BASEVIDWIDTH, BASEVIDHEIGHT));
+	VLOG("I_StartupGraphics: VID_SetMode returned");
 
 	vid.width = BASEVIDWIDTH; // Default size for startup
 	vid.height = BASEVIDHEIGHT; // BitsPerPixel is the SDL interface's

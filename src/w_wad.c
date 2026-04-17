@@ -40,6 +40,17 @@
 #include "lzf.h"
 #endif
 
+#ifndef ZWAD
+#include <errno.h>
+#endif
+
+#ifdef ANDROID
+#include <android/log.h>
+#define WLOG(...) __android_log_print(ANDROID_LOG_INFO, "SRB2", __VA_ARGS__)
+#else
+#define WLOG(...) do{}while(0)
+#endif
+
 #include "doomdef.h"
 #include "doomstat.h"
 #include "doomtype.h"
@@ -176,8 +187,10 @@ FILE *W_OpenWadFile(const char **filename, boolean useerrors)
 	}
 
 	// open wad file
+	WLOG("W_OpenWadFile: trying fopen '%s'", *filename);
 	if ((handle = fopen(*filename, "rb")) == NULL)
 	{
+		WLOG("W_OpenWadFile: fopen FAILED '%s' errno=%d (%s)", *filename, errno, strerror(errno));
 		// If we failed to load the file with the path as specified by
 		// the user, strip the directories and search for the file.
 		nameonly(filenamebuf);
@@ -186,8 +199,10 @@ FILE *W_OpenWadFile(const char **filename, boolean useerrors)
 		// in filenamebuf == *filename.
 		if (findfile(filenamebuf, NULL, true))
 		{
+			WLOG("W_OpenWadFile: retrying fopen '%s'", *filename);
 			if ((handle = fopen(*filename, "rb")) == NULL)
 			{
+				WLOG("W_OpenWadFile: retry fopen FAILED '%s' errno=%d (%s)", *filename, errno, strerror(errno));
 				if (useerrors)
 					CONS_Alert(CONS_ERROR, M_GetText("Can't open %s\n"), *filename);
 				return NULL;
@@ -195,11 +210,13 @@ FILE *W_OpenWadFile(const char **filename, boolean useerrors)
 		}
 		else
 		{
+			WLOG("W_OpenWadFile: findfile also failed for '%s'", *filename);
 			if (useerrors)
 				CONS_Alert(CONS_ERROR, M_GetText("File %s not found.\n"), *filename);
 			return NULL;
 		}
 	}
+	WLOG("W_OpenWadFile: SUCCESS opened '%s'", *filename);
 	return handle;
 }
 

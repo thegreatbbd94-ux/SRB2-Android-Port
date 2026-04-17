@@ -88,6 +88,10 @@
 #include "win32/win_main.h" // I_DoStartupMouse
 #endif
 
+#ifdef ANDROID
+#include "SDL.h"
+#endif
+
 #ifdef HW3SOUND
 #include "hardware/hw3sound.h"
 #endif
@@ -1356,7 +1360,8 @@ void D_SRB2Main(void)
 		configfile[sizeof configfile - 1] = '\0';
 	}
 
-	// Create addons dir
+	// Create home dirs
+	I_mkdir(srb2home, 0755);
 	snprintf(addonsdir, sizeof addonsdir, "%s%s%s", srb2home, PATHSEP, "addons");
 	I_mkdir(addonsdir, 0755);
 
@@ -1461,6 +1466,7 @@ void D_SRB2Main(void)
 
 	CONS_Printf("I_StartupGraphics()...\n");
 	I_StartupGraphics();
+	CONS_Printf("I_StartupGraphics() returned OK\n");
 
 #ifdef HWRENDER
 	// Lactozilla: Add every hardware mode CVAR and CCMD.
@@ -1775,12 +1781,14 @@ const char *D_Home(void)
 {
 	const char *userhome = NULL;
 
-#ifdef ANDROID
-	return "/data/data/org.srb2/";
-#endif
-
 	if (M_CheckParm("-home") && M_IsNextParm())
 		userhome = M_GetNextParm();
+#ifdef ANDROID
+	if (!userhome)
+		userhome = SDL_AndroidGetExternalStoragePath();
+	if (userhome)
+		return userhome;
+#endif
 	else
 	{
 #if !(defined (__unix__) || defined (__APPLE__) || defined (UNIXCOMMON))

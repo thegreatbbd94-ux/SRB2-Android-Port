@@ -67,6 +67,11 @@ typedef LPVOID (WINAPI *p_MapViewOfFile) (HANDLE, DWORD, DWORD, DWORD, SIZE_T);
 #define _MATH_DEFINES_DEFINED
 #include "SDL.h"
 
+#ifdef ANDROID
+#include <android/log.h>
+#define ANDROID_LOG_TAG "SRB2"
+#endif
+
 #ifdef HAVE_TTF
 #include "i_ttf.h"
 #endif
@@ -110,7 +115,9 @@ typedef LPVOID (WINAPI *p_MapViewOfFile) (HANDLE, DWORD, DWORD, DWORD, SIZE_T);
 #if defined (__unix__) || (defined (UNIXCOMMON) && !defined (__APPLE__))
 #include <errno.h>
 #include <sys/wait.h>
-#ifndef __HAIKU__ // haiku's crash dialog is just objectively better
+#if !defined(__HAIKU__) && !defined(ANDROID)
+// haiku's crash dialog is just objectively better
+// Android: fork() breaks JNI, child process cannot call SDL_Android* functions
 #define NEWSIGNALHANDLER
 #endif
 #endif
@@ -969,6 +976,9 @@ void I_OutputMsg(const char *fmt, ...)
 
 	if (!framebuffer)
 		fprintf(stderr, "%s", txt);
+#ifdef ANDROID
+	__android_log_print(ANDROID_LOG_INFO, ANDROID_LOG_TAG, "%s", txt);
+#endif
 #ifdef HAVE_TERMIOS
 	if (consolevent && txt[len-1] == '\n')
 	{
@@ -3026,6 +3036,47 @@ static const char *locateWad(void)
 	// does SRB2WADDIR exist?
 	if (((envstr = I_GetEnv("SRB2WADDIR")) != NULL) && isWadPathOk(envstr))
 		return envstr;
+
+#ifdef ANDROID
+	// First check internal storage (scoped-storage safe, no permissions needed)
+	{
+		const char *internalPath = SDL_AndroidGetInternalStoragePath();
+		__android_log_print(ANDROID_LOG_INFO, ANDROID_LOG_TAG,
+			"locateWad: SDL_AndroidGetInternalStoragePath()='%s'", internalPath ? internalPath : "NULL");
+		if (internalPath)
+		{
+			snprintf(returnWadPath, sizeof(returnWadPath), "%s/SRB2", internalPath);
+			I_OutputMsg(",%s", returnWadPath);
+			__android_log_print(ANDROID_LOG_INFO, ANDROID_LOG_TAG,
+				"locateWad: checking internal '%s'", returnWadPath);
+			if (isWadPathOk(returnWadPath))
+			{
+				__android_log_print(ANDROID_LOG_INFO, ANDROID_LOG_TAG,
+					"locateWad: FOUND srb2.pk3 in internal '%s'", returnWadPath);
+				return returnWadPath;
+			}
+		}
+	}
+	// Then check external storage
+	{
+		__android_log_print(ANDROID_LOG_INFO, ANDROID_LOG_TAG,
+			"locateWad: calling SDL_AndroidGetExternalStoragePath()...");
+		const char *androidPath = SDL_AndroidGetExternalStoragePath();
+		__android_log_print(ANDROID_LOG_INFO, ANDROID_LOG_TAG,
+			"locateWad: SDL_AndroidGetExternalStoragePath()='%s'", androidPath ? androidPath : "NULL");
+		if (androidPath)
+		{
+			snprintf(returnWadPath, sizeof(returnWadPath), "%s/SRB2", androidPath);
+			I_OutputMsg(",%s", returnWadPath);
+			if (isWadPathOk(returnWadPath))
+				return returnWadPath;
+			strcpy(returnWadPath, androidPath);
+			I_OutputMsg(",%s", returnWadPath);
+			if (isWadPathOk(returnWadPath))
+				return returnWadPath;
+		}
+	}
+#endif
 
 #ifndef NOCWD
 	// examine current dir

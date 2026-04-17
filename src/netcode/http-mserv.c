@@ -20,6 +20,12 @@ Documentation available here.
 
 #include "../doomdef.h"
 #include "d_clisrv.h"
+
+#ifdef ANDROID
+#include <jni.h>
+#include <string.h>
+#include "SDL.h"
+#endif
 #include "client_connection.h"
 #include "../command.h"
 #include "../m_argv.h"
@@ -77,12 +83,38 @@ static char *hms_server_token_ipv6;
 
 static char hms_useragent[512];
 
+#ifdef ANDROID
+/* Cached JNI references — must be set from main thread via HMS_init_jni() */
+static jclass    jni_srb2_class;
+static jmethodID jni_httpRequest_mid;
+
+void HMS_init_jni(void)
+{
+	JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+	if (!env) return;
+
+	jclass local = (*env)->FindClass(env, "org/srb2/android/SRB2Activity");
+	if (local)
+	{
+		jni_srb2_class = (jclass)(*env)->NewGlobalRef(env, local);
+		(*env)->DeleteLocalRef(env, local);
+		jni_httpRequest_mid = (*env)->GetStaticMethodID(env, jni_srb2_class,
+			"httpRequest",
+			"(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;I)Ljava/lang/String;");
+	}
+}
+#endif
+
 struct HMS_buffer
 {
 	CURL *curl;
 	char *buffer;
 	int   needle;
 	int    end;
+#ifdef ANDROID
+	char *jni_url;
+	const char *jni_postdata;
+#endif
 };
 
 static void
@@ -246,6 +278,11 @@ HMS_connect (int proto, const char *format, ...)
 
 	curl_easy_setopt(curl, CURLOPT_USERAGENT, hms_useragent);
 
+#ifdef ANDROID
+	buffer->jni_url = strdup(url);
+	buffer->jni_postdata = NULL;
+#endif
+
 	curl_free(quack_token);
 	free(url);
 
@@ -255,26 +292,106 @@ HMS_connect (int proto, const char *format, ...)
 static int
 HMS_do (struct HMS_buffer *buffer)
 {
-	CURLcode cc;
-	long status;
-
+	long status = 0;
 	char *p;
 
-	cc = curl_easy_perform(buffer->curl);
-
-	if (cc != CURLE_OK)
+#ifdef ANDROID
+	/* Use Java HttpsURLConnection — curl+mbedTLS SSL is broken on Android */
 	{
-		Contact_error();
-		Blame(
-				"From curl_easy_perform: %s\n",
-				curl_easy_strerror(cc)
-		);
-		return 0;
+		JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+		jstring jurl, jpost, juseragent, jresult;
+		const char *result;
+		const char *nl;
+		size_t body_len;
+
+		if (!env || !jni_srb2_class || !jni_httpRequest_mid)
+		{
+			Contact_error();
+			Blame("Android JNI httpRequest not available\n");
+			return 0;
+		}
+
+		jurl = (*env)->NewStringUTF(env, buffer->jni_url);
+		jpost = buffer->jni_postdata
+			? (*env)->NewStringUTF(env, buffer->jni_postdata) : NULL;
+		juseragent = (*env)->NewStringUTF(env, hms_useragent);
+
+		CONS_Printf("HMS: Java %s '%s'\n",
+			buffer->jni_postdata ? "POST" : "GET", buffer->jni_url);
+
+		jresult = (jstring)(*env)->CallStaticObjectMethod(env, jni_srb2_class, jni_httpRequest_mid,
+			jurl, jpost, juseragent, (jint)cv_masterserver_timeout.value);
+
+		(*env)->DeleteLocalRef(env, jurl);
+		if (jpost) (*env)->DeleteLocalRef(env, jpost);
+		(*env)->DeleteLocalRef(env, juseragent);
+
+		if (!jresult)
+		{
+			Contact_error();
+			Blame("Android HTTP request returned null\n");
+			return 0;
+		}
+
+		result = (*env)->GetStringUTFChars(env, jresult, NULL);
+		nl = result ? strchr(result, '\n') : NULL;
+
+		if (!nl)
+		{
+			if (result) (*env)->ReleaseStringUTFChars(env, jresult, result);
+			(*env)->DeleteLocalRef(env, jresult);
+			Contact_error();
+			Blame("Malformed JNI HTTP response\n");
+			return 0;
+		}
+
+		if (strncmp(result, "ERROR", 5) == 0)
+		{
+			Contact_error();
+			Blame("HTTP request failed: %s\n", nl + 1);
+			(*env)->ReleaseStringUTFChars(env, jresult, result);
+			(*env)->DeleteLocalRef(env, jresult);
+			return 0;
+		}
+
+		status = atol(result);
+		body_len = strlen(nl + 1);
+
+		if ((int)body_len >= buffer->end)
+		{
+			buffer->end = body_len + 1;
+			buffer->buffer = realloc(buffer->buffer, buffer->end);
+		}
+		memcpy(buffer->buffer, nl + 1, body_len);
+		buffer->needle = body_len;
+		buffer->buffer[buffer->needle] = '\0';
+
+		CONS_Printf("HMS: Java HTTP status %ld, body %d bytes\n", status, (int)body_len);
+
+		(*env)->ReleaseStringUTFChars(env, jresult, result);
+		(*env)->DeleteLocalRef(env, jresult);
 	}
+#else
+	{
+		CURLcode cc;
 
-	buffer->buffer[buffer->needle] = '\0';
+		cc = curl_easy_perform(buffer->curl);
 
-	curl_easy_getinfo(buffer->curl, CURLINFO_RESPONSE_CODE, &status);
+		if (cc != CURLE_OK)
+		{
+			Contact_error();
+			Blame(
+					"From curl_easy_perform: %s\n",
+					curl_easy_strerror(cc)
+			);
+			return 0;
+		}
+
+		buffer->buffer[buffer->needle] = '\0';
+
+		curl_easy_getinfo(buffer->curl, CURLINFO_RESPONSE_CODE, &status);
+	}
+#endif
 
 	if (status != 200)
 	{
@@ -302,6 +419,9 @@ HMS_end (struct HMS_buffer *buffer)
 {
 	curl_easy_cleanup(buffer->curl);
 	free(buffer->buffer);
+#ifdef ANDROID
+	free(buffer->jni_url);
+#endif
 	free(buffer);
 }
 
@@ -448,6 +568,9 @@ HMS_register (void)
 	curl_free(title);
 
 	curl_easy_setopt(hms->curl, CURLOPT_POSTFIELDS, post);
+#ifdef ANDROID
+	hms->jni_postdata = post;
+#endif
 
 	ok = HMS_do(hms);
 
@@ -468,6 +591,9 @@ HMS_register (void)
 		return 0;
 
 	curl_easy_setopt(hms->curl, CURLOPT_POSTFIELDS, post);
+#ifdef ANDROID
+	hms->jni_postdata = post;
+#endif
 
 	ok = HMS_do(hms);
 
@@ -497,6 +623,9 @@ HMS_unlist (void)
 
 		curl_easy_setopt(hms->curl, CURLOPT_POST, 1);
 		curl_easy_setopt(hms->curl, CURLOPT_POSTFIELDSIZE, 0);
+#ifdef ANDROID
+		hms->jni_postdata = "";
+#endif
 
 		ok = HMS_do(hms);
 		HMS_end(hms);
@@ -514,6 +643,9 @@ HMS_unlist (void)
 
 		curl_easy_setopt(hms->curl, CURLOPT_POST, 1);
 		curl_easy_setopt(hms->curl, CURLOPT_POSTFIELDSIZE, 0);
+#ifdef ANDROID
+		hms->jni_postdata = "";
+#endif
 
 		ok = HMS_do(hms);
 		HMS_end(hms);
@@ -552,6 +684,9 @@ HMS_update (void)
 			return 0;
 
 		curl_easy_setopt(hms->curl, CURLOPT_POSTFIELDS, post);
+#ifdef ANDROID
+		hms->jni_postdata = post;
+#endif
 
 		ok = HMS_do(hms);
 		HMS_end(hms);
@@ -566,6 +701,9 @@ HMS_update (void)
 			return ok;
 
 		curl_easy_setopt(hms->curl, CURLOPT_POSTFIELDS, post);
+#ifdef ANDROID
+		hms->jni_postdata = post;
+#endif
 
 		ok = HMS_do(hms);
 		HMS_end(hms);

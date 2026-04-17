@@ -670,8 +670,9 @@ static inline MYFILE *LUA_GetFile(UINT16 wad, UINT16 lump, char **name)
 
 	f->wad = wad;
 	f->size = W_LumpLengthPwad(wad, lump);
-	f->data = Z_Malloc(f->size, PU_LUA, NULL);
+	f->data = Z_Malloc(f->size + 1, PU_LUA, NULL);
 	W_ReadLumpPwad(wad, lump, f->data);
+	f->data[f->size] = '\0';
 	f->curpos = f->data;
 
 	len = strlen(wadfiles[wad]->filename); // length of file name

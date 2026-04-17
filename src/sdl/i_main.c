@@ -50,6 +50,11 @@
 extern int SDL_main(int argc, char *argv[]);
 #endif
 
+#ifdef ANDROID
+#include <android/log.h>
+#include "SDL.h"
+#endif
+
 #ifdef LOGMESSAGES
 FILE *logstream = NULL;
 char logfilename[1024];
@@ -177,6 +182,17 @@ int main(int argc, char **argv)
 {
 	myargc = argc;
 	myargv = argv; /// \todo pull out path to exe from this string
+
+#ifdef ANDROID
+	__android_log_print(ANDROID_LOG_INFO, "SRB2", "=== SRB2 SDL_main entered, argc=%d ===", argc);
+	for (int i = 0; i < argc; i++)
+		__android_log_print(ANDROID_LOG_INFO, "SRB2", "  argv[%d] = %s", i, argv[i]);
+	// Disable accelerometer as joystick — phone tilt should not control the game
+	SDL_SetHint(SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0");
+	// Cache JNI references for Java HTTP requests (must be called from main thread)
+	extern void HMS_init_jni(void);
+	HMS_init_jni();
+#endif
 
 #ifdef HAVE_TTF
 #ifdef _WIN32
