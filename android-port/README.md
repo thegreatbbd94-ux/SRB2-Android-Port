@@ -1,8 +1,12 @@
 # SRB2 Android Port
 
-Unofficial Android port of [Sonic Robo Blast 2](https://srb2.org/) v2.2.15. I made this because I wanted to play SRB2 on my phone — the official version doesn't have Android support.
+An unofficial, fan-made **Android port** of [Sonic Robo Blast 2](https://srb2.org/) v2.2.15, by **[@thegreatbbd94-ux](https://github.com/thegreatbbd94-ux)**.
 
-The full source code is right here in this repo. The Android-specific stuff is in this `android-port/` directory and the SRB2 engine source is in `src/`.
+> **What this repo is:** my Android-specific work — a touch-control overlay, JNI/Java glue code, build system, storage handling, and small engine patches needed to run SRB2 on Android phones.
+>
+> **What this repo is *not*:** I did **not** write Sonic Robo Blast 2. The game itself is made by [Sonic Team Junior](https://github.com/STJr/SRB2) and is a **PC-only** release upstream. This repo re-hosts their GPLv2 source (as required by the license) so you can verify every change I made on top of it.
+
+The upstream SRB2 engine source lives in `src/` (unchanged except for a handful of Android compatibility patches). Everything Android-specific — the port itself — is in [`android-port/`](./android-port/) and [`src/sdl/`](./src/sdl/).
 
 ## Download
 
@@ -23,15 +27,15 @@ Grab the latest APK from the [Releases](../../releases) page.
 
 ## Addons / Mods
 
-After launching the game once, SRB2 creates its home folder at:
+After launching the game once (and granting the **All Files Access** permission when prompted), SRB2 creates its home folder at:
 
 ```
-/storage/emulated/0/Android/data/org.srb2.android/files/SRB2/
+/storage/emulated/0/SRB2/
 ```
 
-Open any file manager (e.g. Files by Google), navigate to `Android/data/org.srb2.android/files/SRB2/`, and drop your `.pk3` or `.wad` addon files in the `addons/` subfolder inside. Then load them from the in-game addon menu.
+This is in the root of internal storage — **not** inside `Android/data/` — so any file manager can reach it. Drop your `.pk3` or `.wad` addon files in the `addons/` subfolder and load them from the in-game addon menu.
 
-> On Android 11 and newer, some file managers restrict access to `Android/data/`. If yours does, try Files by Google — it can open that folder. You can also use `adb push yourmod.pk3 /sdcard/Android/data/org.srb2.android/files/SRB2/addons/` if you have a PC handy.
+> If you previously had an older build that stored data under `Android/data/org.srb2.android/files/SRB2/`, it will be migrated automatically to the new location on first launch.
 
 ## Controls
 
@@ -94,9 +98,9 @@ A few things had to be changed to make SRB2 work on Android:
 
 ## Credits
 
-**[Sonic Robo Blast 2](https://srb2.org/)** is made by **[Sonic Team Junior](https://github.com/STJr/SRB2)**, licensed under GPL v2.
+**[Sonic Robo Blast 2](https://srb2.org/)** — the underlying game — is made by **[Sonic Team Junior](https://github.com/STJr/SRB2)**, licensed under **GPL v2**. SRB2 upstream is PC-only; all credit for the game itself goes to them.
 
-Android port by **[@thegreatbbd-ux](https://github.com/thegreatbbd-ux)**.
+**Android port** (this repo's additions — touch controls, JNI bridge, build system, storage handling, gl4es integration, Android-specific engine patches) by **[@thegreatbbd94-ux](https://github.com/thegreatbbd94-ux)**.
 
 This is an unofficial fan port. Sonic the Hedgehog is owned by SEGA. Not affiliated with or endorsed by Sonic Team Junior or SEGA.
 
@@ -104,6 +108,7 @@ This is an unofficial fan port. Sonic the Hedgehog is owned by SEGA. Not affilia
 
 - [SDL2](https://www.libsdl.org/) — Simple DirectMedia Layer
 - [SDL2_mixer](https://github.com/libsdl-org/SDL_mixer) — Audio mixer
+- [gl4es](https://github.com/ptitSeb/gl4es) by **ptitSeb** — OpenGL 1.x/2.x over OpenGL ES 2.0 (MIT license). Source vendored under `android-port/app/src/main/jni/gl4es/` with its original license intact.
 - [libpng](http://www.libpng.org/) — PNG support
 - [curl](https://curl.se/) + [mbedTLS](https://tls.mbed.org/) — HTTP/TLS (build dependency)
 - [zlib](https://zlib.net/) — Compression
@@ -111,17 +116,6 @@ This is an unofficial fan port. Sonic the Hedgehog is owned by SEGA. Not affilia
 ## License
 
 GPL v2, same as the original SRB2. See [LICENSE](../LICENSE).
-
-| D-Pad (left side) | Move (forward/back/strafe) |
-| Camera drag (center) | Look around |
-| **A** button | Jump |
-| **B** button | Spin |
-| **C** button | Fire |
-| **D** button | Toss Flag |
-| **PAUSE** | Pause / Menu |
-| **START** | Enter / Confirm |
-
-The D-pad also navigates menus (up/down/left/right).
 
 ## Credits
 
