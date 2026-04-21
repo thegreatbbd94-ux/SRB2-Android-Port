@@ -1,5 +1,5 @@
 ## Srb2 android port
- #this is a unnoficial android port for others who want to play on mobile if the game crashes on the newer version downgrade to the old version. 
+ this is a unnoficial android port for others who want to play on mobile if the game crashes on the newer version downgrade to the old version. 
 
 ## License 
 this  is licensed under gdpr license
