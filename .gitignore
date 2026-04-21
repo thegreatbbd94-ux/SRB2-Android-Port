@@ -47,6 +47,19 @@ android-port/app/src/main/jni/SDL2_old/
 android-port/app/src/main/jni/curl/
 android-port/app/src/main/jni/mbedtls/
 
+# Android game data assets (shipped with APK releases; not in source)
+android-port/app/src/main/assets/srb2data/*.pk3
+android-port/app/src/main/assets/srb2data/*.wad
+
+# Android prebuilt native libs (built from source; see android-port/README.md)
+android-port/app/src/main/jni/lib/
+
+# Android APK outputs
+*.apk
+
+# VS Code workspace
+.vscode/
+
 # Misc
 *.zip
 *.png

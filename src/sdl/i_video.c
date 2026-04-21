@@ -2255,8 +2255,17 @@ void I_StartupGraphics(void)
 	//VID_Command_ModeList_f();
 
 #ifdef HWRENDER
+#ifdef ANDROID
+	// On Android, always pre-load gl4es (libGL.so) before any window/GL context
+	// is created. The Android code path creates windows with SDL_WINDOW_OPENGL
+	// even for software rendering, so SDL_GL_LoadLibrary must be called first.
+	// Without this, switching to OpenGL later fails because the library can't
+	// be loaded after a GL context already exists.
+	VID_StartupOpenGL();
+#else
 	if (rendermode == render_opengl)
 		VID_StartupOpenGL();
+#endif
 #endif
 
 	// Window icon

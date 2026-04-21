@@ -924,6 +924,9 @@ static void HU_sendChatMessage(void)
 	size_t ci;
 	INT32 target = 0;
 
+	buf[0] = 0; // target: 0 = say to everyone
+	buf[1] = 0; // flags: no special flags
+
 	// if our message was nothing but spaces, don't send it.
 	if (HU_chatboxContainsOnlySpaces())
 		return;
@@ -1065,7 +1068,11 @@ boolean HU_Responder(event_t *ev)
 		{
 			I_SetTextInputMode(true);
 			chat_on = true;
+#ifdef __ANDROID__
+			chat_on_first_event = true; // On Android, touch button doesn't generate a text event to discard
+#else
 			chat_on_first_event = false;
+#endif
 			w_chat[0] = 0;
 			teamtalk = false;
 			chat_scrollmedown = true;
@@ -1077,7 +1084,11 @@ boolean HU_Responder(event_t *ev)
 		{
 			I_SetTextInputMode(true);
 			chat_on = true;
+#ifdef __ANDROID__
+			chat_on_first_event = true; // On Android, touch button doesn't generate a text event to discard
+#else
 			chat_on_first_event = false;
+#endif
 			w_chat[0] = 0;
 			teamtalk = G_GametypeHasTeams(); // Don't teamtalk if we don't have teams.
 			chat_scrollmedown = true;

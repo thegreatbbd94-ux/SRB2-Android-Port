@@ -2,9 +2,12 @@ package org.srb2.android;
 
 import android.content.Context;
 import android.content.res.AssetManager;
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.provider.Settings;
 import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
@@ -38,6 +41,10 @@ public class SRB2Activity extends SDLActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // Request "All Files Access" on Android 11+ so data lives in /sdcard/SRB2/
+        // which users can browse with any file manager to add addons
+        requestStoragePermission();
+
         // Set the game data path before SDL init
         setupGameFiles();
 
@@ -46,8 +53,8 @@ public class SRB2Activity extends SDLActivity {
 
         super.onCreate(savedInstanceState);
 
-        // Go fullscreen / immersive
-        hideSystemUI();
+        // Go fullscreen / immersive (deferred until DecorView is ready)
+        getWindow().getDecorView().post(this::hideSystemUI);
 
         // Keep screen on while playing
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -66,11 +73,14 @@ public class SRB2Activity extends SDLActivity {
 
     /**
      * Override to specify the shared library name.
-     * SDL2 will load libsrb2.so (our native library) and libSDL2.so.
+     * Load order matters: libGL.so (gl4es) MUST be loaded before SDL2 so that
+     * SDL_GL_GetProcAddress returns gl4es function pointers (which translate
+     * OpenGL 1.x/2.x calls and GLSL 1.x built-ins to OpenGL ES 2.0).
      */
     @Override
     protected String[] getLibraries() {
         return new String[]{
+            "GL",     // gl4es — desktop OpenGL over GLES2, must load first
             "SDL2",
             "srb2"
         };
@@ -83,85 +93,129 @@ public class SRB2Activity extends SDLActivity {
     @Override
     protected String[] getArguments() {
         String dataPath = getGameDataPath();
+        // Ensure addons subfolder exists so users know where to drop pk3/wad files
+        new File(dataPath, "addons").mkdirs();
         return new String[]{
             "-home", dataPath,
-            "-software",
         };
     }
 
     /**
-     * Get the path where game data files (pk3, wad, etc.) are stored.
-     * Uses app-internal files dir to avoid scoped storage issues on Android 11+.
+     * Request MANAGE_EXTERNAL_STORAGE on Android 11+ so we can use /sdcard/SRB2/
+     * which is freely browsable by users (they can add addons with any file manager).
+     */
+    private void requestStoragePermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (!Environment.isExternalStorageManager()) {
+                try {
+                    Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                        Uri.parse("package:" + getPackageName()));
+                    startActivity(intent);
+                } catch (Exception e) {
+                    Intent intent = new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION);
+                    startActivity(intent);
+                }
+            }
+        }
+    }
+
+    /**
+     * Get the path where game data files (pk3, wad, addons, saves) are stored.
+     * On Android 11+ with MANAGE_EXTERNAL_STORAGE: /storage/emulated/0/SRB2/
+     *   (user-accessible — can add addons with any file manager)
+     * On Android 10 and below: /storage/emulated/0/Android/data/org.srb2.android/files/SRB2/
+     * Falls back to internal storage only if external is unavailable.
      */
     private String getGameDataPath() {
-        // Use internal files dir (no permissions needed, no scoped storage issues)
-        File srb2Dir = new File(getFilesDir(), "SRB2");
-        return srb2Dir.getAbsolutePath();
-    }
-
-    /**
-     * Get the legacy external path where user may have pushed files via adb.
-     */
-    private String getExternalGameDataPath() {
+        // Android 11+: use public directory if we have All Files Access
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()) {
+            File srb2Dir = new File(Environment.getExternalStorageDirectory(), "SRB2");
+            srb2Dir.mkdirs();
+            return srb2Dir.getAbsolutePath();
+        }
+        // Android 10 and below, or if permission not yet granted
         File dir = getExternalFilesDir(null);
-        if (dir == null) return null;
-        File srb2Dir = new File(dir, "SRB2");
-        return srb2Dir.getAbsolutePath();
+        if (dir != null) {
+            File srb2Dir = new File(dir, "SRB2");
+            return srb2Dir.getAbsolutePath();
+        }
+        // Fallback: internal storage (not browsable by user)
+        return new File(getFilesDir(), "SRB2").getAbsolutePath();
     }
 
     /**
-     * Set up game files: if files exist in external storage (pushed via adb),
-     * copy them to internal storage on first run. This avoids scoped storage
-     * permission issues on Android 11+ / Android 16.
+     * Set up game files in the game data directory.
+     * On first run (or after an update), copies game assets from the APK.
+     * Migrates data from old locations (internal storage, app-scoped external)
+     * to the new public /sdcard/SRB2/ location when possible.
      */
     private void setupGameFiles() {
-        String internalPath = getGameDataPath();
-        File internalDir = new File(internalPath);
-        if (!internalDir.exists()) {
-            internalDir.mkdirs();
+        String dataPath = getGameDataPath();
+        File dataDir = new File(dataPath);
+        if (!dataDir.exists()) {
+            dataDir.mkdirs();
         }
 
-        // Check if we already have srb2.pk3 in internal dir
-        File mainPk3 = new File(internalDir, "srb2.pk3");
+        // Create addons dir so users can see where to drop their pk3/wad files
+        new File(dataDir, "addons").mkdirs();
+
+        // Check if we already have srb2.pk3
+        File mainPk3 = new File(dataDir, "srb2.pk3");
         if (mainPk3.exists()) {
-            Log.i(TAG, "setupGameFiles: srb2.pk3 already in internal dir: " + internalPath);
+            Log.i(TAG, "setupGameFiles: srb2.pk3 already at: " + dataPath);
             return;
         }
 
-        // Try to copy from external storage (where user pushed files via adb)
-        String externalPath = getExternalGameDataPath();
-        if (externalPath != null) {
-            File externalDir = new File(externalPath);
-            Log.i(TAG, "setupGameFiles: checking external dir: " + externalPath + " exists=" + externalDir.exists());
-            if (externalDir.exists() && externalDir.isDirectory()) {
-                File[] files = externalDir.listFiles();
-                if (files != null) {
-                    for (File src : files) {
-                        if (src.isFile()) {
-                            File dest = new File(internalDir, src.getName());
-                            Log.i(TAG, "setupGameFiles: copying " + src.getName()
-                                + " (" + (src.length() / 1024 / 1024) + " MB) to internal...");
-                            try {
-                                copyFile(src, dest);
-                                Log.i(TAG, "setupGameFiles: copied " + src.getName() + " OK");
-                            } catch (IOException e) {
-                                Log.e(TAG, "setupGameFiles: FAILED to copy " + src.getName(), e);
-                            }
-                        }
-                    }
+        // Migration: try old app-scoped external storage first
+        // (Android/data/org.srb2.android/files/SRB2/)
+        File oldAppScopedDir = new File(getExternalFilesDir(null), "SRB2");
+        if (!oldAppScopedDir.getAbsolutePath().equals(dataDir.getAbsolutePath())) {
+            File oldAppPk3 = new File(oldAppScopedDir, "srb2.pk3");
+            if (oldAppPk3.exists()) {
+                Log.i(TAG, "setupGameFiles: migrating from app-scoped to public storage...");
+                migrateDirectory(oldAppScopedDir, dataDir);
+                if (mainPk3.exists()) {
+                    Log.i(TAG, "setupGameFiles: migration from app-scoped complete");
+                    return;
                 }
-            } else {
-                Log.w(TAG, "setupGameFiles: external dir missing or not a directory");
             }
         }
 
-        // Also try copying from APK assets (legacy path)
+        // Migration: try old internal storage location
+        File oldInternalDir = new File(getFilesDir(), "SRB2");
+        File oldPk3 = new File(oldInternalDir, "srb2.pk3");
+        if (oldPk3.exists()) {
+            Log.i(TAG, "setupGameFiles: migrating from internal to external storage...");
+            File[] files = oldInternalDir.listFiles();
+            if (files != null) {
+                for (File src : files) {
+                    if (src.isFile()) {
+                        File dest = new File(dataDir, src.getName());
+                        Log.i(TAG, "setupGameFiles: migrating " + src.getName()
+                            + " (" + (src.length() / 1024 / 1024) + " MB)...");
+                        try {
+                            copyFile(src, dest);
+                            src.delete();
+                            Log.i(TAG, "setupGameFiles: migrated " + src.getName() + " OK");
+                        } catch (IOException e) {
+                            Log.e(TAG, "setupGameFiles: FAILED to migrate " + src.getName(), e);
+                        }
+                    }
+                }
+            }
+            if (mainPk3.exists()) {
+                Log.i(TAG, "setupGameFiles: migration complete");
+                return;
+            }
+        }
+
+        // Copy game data from APK assets bundle
         try {
             AssetManager am = getAssets();
             String[] assetFiles = am.list("srb2data");
             if (assetFiles != null) {
                 for (String filename : assetFiles) {
-                    File destFile = new File(internalDir, filename);
+                    File destFile = new File(dataDir, filename);
                     if (!destFile.exists()) {
                         Log.i(TAG, "Copying asset: " + filename);
                         copyAsset(am, "srb2data/" + filename, destFile);
@@ -174,9 +228,10 @@ public class SRB2Activity extends SDLActivity {
 
         // Final check
         if (mainPk3.exists()) {
-            Log.i(TAG, "setupGameFiles: srb2.pk3 ready in internal dir, size=" + mainPk3.length());
+            Log.i(TAG, "setupGameFiles: srb2.pk3 ready at " + dataPath
+                + ", size=" + mainPk3.length());
         } else {
-            Log.e(TAG, "setupGameFiles: WARNING - srb2.pk3 NOT FOUND in " + internalPath);
+            Log.e(TAG, "setupGameFiles: WARNING - srb2.pk3 NOT FOUND in " + dataPath);
         }
     }
 
@@ -190,6 +245,32 @@ public class SRB2Activity extends SDLActivity {
             int read;
             while ((read = in.read(buffer)) != -1) {
                 out.write(buffer, 0, read);
+            }
+        }
+    }
+
+    /**
+     * Recursively migrate all files and directories from src to dest.
+     * Existing files in dest are not overwritten.
+     */
+    private void migrateDirectory(File srcDir, File destDir) {
+        destDir.mkdirs();
+        File[] files = srcDir.listFiles();
+        if (files == null) return;
+        for (File src : files) {
+            File dest = new File(destDir, src.getName());
+            if (src.isDirectory()) {
+                migrateDirectory(src, dest);
+            } else if (src.isFile() && !dest.exists()) {
+                Log.i(TAG, "setupGameFiles: migrating " + src.getName()
+                    + " (" + (src.length() / 1024 / 1024) + " MB)...");
+                try {
+                    copyFile(src, dest);
+                    src.delete();
+                    Log.i(TAG, "setupGameFiles: migrated " + src.getName() + " OK");
+                } catch (IOException e) {
+                    Log.e(TAG, "setupGameFiles: FAILED to migrate " + src.getName(), e);
+                }
             }
         }
     }
@@ -357,6 +438,8 @@ public class SRB2Activity extends SDLActivity {
      */
     private void hideSystemUI() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            View decorView = getWindow().peekDecorView();
+            if (decorView == null) return;
             WindowInsetsController controller = getWindow().getInsetsController();
             if (controller != null) {
                 controller.hide(WindowInsets.Type.systemBars());

@@ -3038,7 +3038,20 @@ static const char *locateWad(void)
 		return envstr;
 
 #ifdef ANDROID
-	// First check internal storage (scoped-storage safe, no permissions needed)
+	// First check public storage path (/storage/emulated/0/SRB2)
+	// This is where we store game data so users can access addons
+	{
+		strcpy(returnWadPath, "/storage/emulated/0/SRB2");
+		__android_log_print(ANDROID_LOG_INFO, ANDROID_LOG_TAG,
+			"locateWad: checking public path '%s'", returnWadPath);
+		if (isWadPathOk(returnWadPath))
+		{
+			__android_log_print(ANDROID_LOG_INFO, ANDROID_LOG_TAG,
+				"locateWad: FOUND srb2.pk3 in '%s'", returnWadPath);
+			return returnWadPath;
+		}
+	}
+	// Then check internal storage (scoped-storage safe, no permissions needed)
 	{
 		const char *internalPath = SDL_AndroidGetInternalStoragePath();
 		__android_log_print(ANDROID_LOG_INFO, ANDROID_LOG_TAG,
@@ -3057,7 +3070,7 @@ static const char *locateWad(void)
 			}
 		}
 	}
-	// Then check external storage
+	// Then check external storage (old app-scoped path)
 	{
 		__android_log_print(ANDROID_LOG_INFO, ANDROID_LOG_TAG,
 			"locateWad: calling SDL_AndroidGetExternalStoragePath()...");

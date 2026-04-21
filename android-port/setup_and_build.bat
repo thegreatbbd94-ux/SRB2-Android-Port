@@ -6,7 +6,7 @@ REM
 REM Prerequisites:
 REM   1. Android Studio installed (https://developer.android.com/studio)
 REM   2. Android SDK & NDK installed via Android Studio SDK Manager:
-REM      - Android SDK Platform 34
+REM      - Android SDK Platform 36 (Android 16)
 REM      - Android NDK (Side by side) - any recent version
 REM      - CMake 3.22.1 (via SDK Manager > SDK Tools)
 REM   3. Git installed
@@ -35,7 +35,7 @@ echo.
 
 REM Clone SDL2
 if not exist "%JNI_DIR%\SDL2\CMakeLists.txt" (
-    echo [1/2] Cloning SDL2 source...
+    echo [1/5] Cloning SDL2 source...
     git clone --branch release-2.28.5 --depth 1 https://github.com/libsdl-org/SDL.git "%JNI_DIR%\SDL2"
     if errorlevel 1 (
         echo ERROR: Failed to clone SDL2
@@ -43,12 +43,12 @@ if not exist "%JNI_DIR%\SDL2\CMakeLists.txt" (
     )
     echo SDL2 cloned successfully.
 ) else (
-    echo [1/2] SDL2 already present, skipping.
+    echo [1/5] SDL2 already present, skipping.
 )
 
 REM Clone SDL2_mixer
 if not exist "%JNI_DIR%\SDL2_mixer\CMakeLists.txt" (
-    echo [2/2] Cloning SDL2_mixer source...
+    echo [2/5] Cloning SDL2_mixer source...
     git clone --branch release-2.6.3 --depth 1 https://github.com/libsdl-org/SDL_mixer.git "%JNI_DIR%\SDL2_mixer"
     if errorlevel 1 (
         echo WARNING: Failed to clone SDL2_mixer. Audio will be basic.
@@ -56,7 +56,46 @@ if not exist "%JNI_DIR%\SDL2_mixer\CMakeLists.txt" (
         echo SDL2_mixer cloned successfully.
     )
 ) else (
-    echo [2/2] SDL2_mixer already present, skipping.
+    echo [2/5] SDL2_mixer already present, skipping.
+)
+
+REM Clone curl
+if not exist "%JNI_DIR%\curl\CMakeLists.txt" (
+    echo [3/5] Cloning curl source...
+    git clone --branch curl-8_5_0 --depth 1 https://github.com/curl/curl.git "%JNI_DIR%\curl"
+    if errorlevel 1 (
+        echo WARNING: Failed to clone curl. Master server HTTPS may not work.
+    ) else (
+        echo curl cloned successfully.
+    )
+) else (
+    echo [3/5] curl already present, skipping.
+)
+
+REM Clone mbedTLS (needed by curl for HTTPS)
+if not exist "%JNI_DIR%\mbedtls\CMakeLists.txt" (
+    echo [4/5] Cloning mbedTLS source...
+    git clone --branch v3.5.1 --depth 1 https://github.com/Mbed-TLS/mbedtls.git "%JNI_DIR%\mbedtls"
+    if errorlevel 1 (
+        echo WARNING: Failed to clone mbedTLS.
+    ) else (
+        echo mbedTLS cloned successfully.
+    )
+) else (
+    echo [4/5] mbedTLS already present, skipping.
+)
+
+REM Clone gl4es (OpenGL 1.x/2.x over OpenGL ES 2.0 - needed for HW renderer + 3D models)
+if not exist "%JNI_DIR%\gl4es\CMakeLists.txt" (
+    echo [5/5] Cloning gl4es source...
+    git clone --depth 1 https://github.com/ptitSeb/gl4es.git "%JNI_DIR%\gl4es"
+    if errorlevel 1 (
+        echo ERROR: Failed to clone gl4es. OpenGL renderer and 3D models will not work.
+        exit /b 1
+    )
+    echo gl4es cloned successfully.
+) else (
+    echo [5/5] gl4es already present, skipping.
 )
 
 echo.
@@ -103,11 +142,11 @@ if not exist "%JNI_DIR%\SDL2\CMakeLists.txt" (
 
 REM Build using Gradle wrapper or system Gradle
 if exist "%SCRIPT_DIR%gradlew.bat" (
-    call "%SCRIPT_DIR%gradlew.bat" assembleDebug
+    call "%SCRIPT_DIR%gradlew.bat" assembleRelease
 ) else (
     echo No Gradle wrapper found. Using system Gradle...
     echo If this fails, open the project in Android Studio instead.
-    gradle assembleDebug
+    gradle assembleRelease
 )
 
 if errorlevel 1 (
@@ -122,10 +161,10 @@ echo  BUILD SUCCESSFUL!
 echo ========================================
 echo.
 echo APK location:
-echo   %SCRIPT_DIR%app\build\outputs\apk\debug\app-debug.apk
+echo   %SCRIPT_DIR%app\build\outputs\apk\release\app-release-unsigned.apk
 echo.
 echo To install on a connected device:
-echo   adb install app\build\outputs\apk\debug\app-debug.apk
+echo   adb install app\build\outputs\apk\release\app-release-unsigned.apk
 echo.
 echo IMPORTANT: You must copy game data to your device:
 echo   adb push srb2.pk3 /sdcard/Android/data/org.srb2.android/files/SRB2/

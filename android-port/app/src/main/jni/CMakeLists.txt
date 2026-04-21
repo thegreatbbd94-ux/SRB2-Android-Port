@@ -305,11 +305,57 @@ file(GLOB SRB2_BLUA_SOURCES "${SRB2_SOURCE_DIR}/blua/*.c")
 file(GLOB SRB2_NETCODE_SOURCES "${SRB2_SOURCE_DIR}/netcode/*.c")
 
 # ============================================================
-# Hardware renderer - DISABLED on Android
-# Desktop OpenGL 1.x fixed-function pipeline is incompatible
-# with OpenGL ES 2.0. Software renderer is used instead,
-# with SDL_Renderer providing GLES2-accelerated display.
+# gl4es — OpenGL 1.x/2.x compatibility layer over OpenGL ES 2.0
+#
+# Provides the full desktop OpenGL fixed-function pipeline and
+# automatically translates GLSL 1.x built-ins (gl_ProjectionMatrix,
+# gl_ModelViewMatrix, gl_Vertex, gl_FrontColor, etc.) to GLSL ES at
+# shader compile time.  This lets SRB2's existing hardware renderer
+# run on Android without any shader modifications.
+#
+# Clone before building:
+#   cd android-port/app/src/main/jni
+#   git clone https://github.com/ptitSeb/gl4es.git gl4es
 # ============================================================
+set(GL4ES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/gl4es")
+if(NOT EXISTS "${GL4ES_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR
+        "gl4es not found at ${GL4ES_DIR}\n"
+        "Clone it with:\n"
+        "  cd android-port/app/src/main/jni\n"
+        "  git clone https://github.com/ptitSeb/gl4es.git gl4es"
+    )
+endif()
+set(NOX11 ON CACHE BOOL "" FORCE)  # No X11 on Android
+set(GLES2 ON CACHE BOOL "" FORCE)  # Use GLES2 backend
+set(USE_ANDROID_LOG ON CACHE BOOL "" FORCE)  # Route gl4es logs to Android logcat
+add_subdirectory(${GL4ES_DIR} gl4es-build)
+# gl4es sets SUFFIX ".so.1" (Linux versioned soname), but Android's linker
+# only understands plain ".so". Override it so libGL.so ends up in the APK.
+set_target_properties(GL PROPERTIES
+    SUFFIX ".so"
+)
+message(STATUS "gl4es enabled — desktop OpenGL over OpenGL ES 2.0")
+
+# ============================================================
+# Hardware renderer sources (HWRENDER)
+# ============================================================
+set(SRB2_HW_SOURCES
+    ${SRB2_SOURCE_DIR}/hardware/r_opengl/r_opengl.c
+    ${SRB2_SOURCE_DIR}/hardware/hw_cache.c
+    ${SRB2_SOURCE_DIR}/hardware/hw_draw.c
+    ${SRB2_SOURCE_DIR}/hardware/hw_main.c
+    ${SRB2_SOURCE_DIR}/hardware/hw_light.c
+    ${SRB2_SOURCE_DIR}/hardware/hw_md2.c
+    ${SRB2_SOURCE_DIR}/hardware/hw_md2load.c
+    ${SRB2_SOURCE_DIR}/hardware/hw_md3load.c
+    ${SRB2_SOURCE_DIR}/hardware/hw_model.c
+    ${SRB2_SOURCE_DIR}/hardware/hw_batching.c
+    ${SRB2_SOURCE_DIR}/hardware/hw_bsp.c
+    ${SRB2_SOURCE_DIR}/hardware/hw_clip.c
+    ${SRB2_SOURCE_DIR}/hardware/hw_shaders.c
+    ${SRB2_SOURCE_DIR}/hardware/hw3sound.c
+)
 
 # ============================================================
 # Android-specific shim
@@ -328,6 +374,7 @@ add_library(main SHARED
     ${SRB2_SDL_SOURCES}
     ${SRB2_BLUA_SOURCES}
     ${SRB2_NETCODE_SOURCES}
+    ${SRB2_HW_SOURCES}
     ${SRB2_ANDROID_SOURCES}
 )
 
@@ -354,12 +401,19 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/config.h"
 )
 
 target_include_directories(main PRIVATE
+    # SDL_opengl.h shim MUST come before SDL2/include so the compiler finds
+    # our version (which redirects to gl4es GL headers) instead of SDL's
+    # empty Android stub.
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${GL4ES_DIR}/include"              # GL/gl.h, GL/glext.h from gl4es
     ${SRB2_SOURCE_DIR}
     ${SRB2_SOURCE_DIR}/blua
     ${SRB2_SOURCE_DIR}/sdl
     ${SRB2_SOURCE_DIR}/netcode
-    ${CMAKE_CURRENT_BINARY_DIR}  # For config.h
-    ${LIBPNG_SRC_DIR}            # For png.h
+    ${SRB2_SOURCE_DIR}/hardware         # hw_*.h headers
+    ${SRB2_SOURCE_DIR}/hardware/r_opengl
+    ${CMAKE_CURRENT_BINARY_DIR}         # For config.h
+    ${LIBPNG_SRC_DIR}                   # For png.h
     ${CMAKE_CURRENT_BINARY_DIR}/libpng  # For pnglibconf.h
 )
 
@@ -381,8 +435,9 @@ target_compile_definitions(main PRIVATE
     HAVE_THREADS
     _LARGEFILE64_SOURCE
 
-    # Hardware renderer (desktop OpenGL) is DISABLED on Android.
-    # Software rendering + SDL_Renderer (GLES2 backend) is used instead.
+    # Hardware renderer — enabled via gl4es (OpenGL 1.x/2.x over OpenGL ES 2.0)
+    HWRENDER
+    GL_GLEXT_PROTOTYPES  # expose extension prototypes from gl4es glext.h
 
     # SDL_main entry point required on Android
     FORCESDLMAIN
@@ -442,10 +497,11 @@ target_compile_features(main PRIVATE c_std_11 cxx_std_17)
 
 # Link libraries
 target_link_libraries(main PRIVATE
+    GL          # gl4es — desktop OpenGL over OpenGL ES 2.0 (MUST come first)
     SDL2
     png_static
-    GLESv2
-    EGL
+    GLESv2      # gl4es uses this internally; keep for SDL2 and NDK ABI compat
+    EGL         # EGL context created by SDL2
     android
     log
     dl
